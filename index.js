@@ -1,51 +1,114 @@
+const INSTAGRAM_WEB_APP_ID = "936619743392459";
+const USERS_PER_PAGE = 50;
+const FOLLOWING_PAGE_SAFETY_LIMIT = 60;
+const FOLLOWERS_PAGE_SAFETY_LIMIT = 250;
+
 const getCookie = (name) => {
-  const cookies = document.cookie
-    .split("; ")
-    .find((row) => row.startsWith(name + "="));
-  return cookies ? cookies.split("=")[1] : null;
+  const value = `; ${document.cookie}`.split(`; ${name}=`);
+  if (value.length !== 2) return null;
+  return value.pop().split(";").shift();
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const encodedMessage = "QXV0b3I6IEl2YW4gQWx2YXJleiA=";
 
-const afterUrlGenerator = (afterCursor) =>
-  `https://www.instagram.com/graphql/query/?query_hash=3dec7e2c57367ef3da3d987d89f9dbc8&variables={"id":"${ds_user_id}","include_reel":"true","fetch_mutual":"false","first":"24","after":"${afterCursor}"}`;
+const csrftoken = getCookie("csrftoken");
+const ds_user_id = getCookie("ds_user_id");
 
 const unfollowUserUrlGenerator = (userId) =>
   `https://www.instagram.com/web/friendships/${userId}/unfollow/`;
 
-let followedPeople;
-const csrftoken = getCookie("csrftoken");
-const ds_user_id = getCookie("ds_user_id");
-let initialURL = `https://www.instagram.com/graphql/query/?query_hash=3dec7e2c57367ef3da3d987d89f9dbc8&variables={"id":"${ds_user_id}","include_reel":"true","fetch_mutual":"false","first":"24"}`;
-let doNext = true;
-const filteredList = [];
-let getUnfollowCounter = 0;
-let scrollCycle = 0;
+const friendshipsUrlGenerator = (type, maxId, count = USERS_PER_PAGE) => {
+  let url = `https://www.instagram.com/api/v1/friendships/${ds_user_id}/${type}/?count=${count}`;
+  if (maxId !== undefined) {
+    url += `&max_id=${encodeURIComponent(maxId)}`;
+  }
+  return url;
+};
 
-const logProgress = () => {
+const fetchFriendshipsPage = async (type, maxId, count = USERS_PER_PAGE) => {
+  const response = await fetch(friendshipsUrlGenerator(type, maxId, count), {
+    credentials: "same-origin",
+    headers: {
+      "X-IG-App-ID": INSTAGRAM_WEB_APP_ID,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Instagram returned HTTP ${response.status} while fetching ${type}`
+    );
+  }
+
+  return response.json();
+};
+
+const toUserNode = (user, followsViewer) => ({
+  id: String(user.pk_id ?? user.pk),
+  username: user.username,
+  full_name: user.full_name ?? "",
+  profile_pic_url: user.profile_pic_url,
+  is_private: Boolean(user.is_private),
+  is_verified: Boolean(user.is_verified),
+  follows_viewer: followsViewer,
+});
+
+const fetchAllUsers = async (type, pageLimit, onProgress) => {
+  const users = [];
+  let nextMaxId;
+  let pages = 0;
+  let scrollCycle = 0;
+
+  while (true) {
+    const data = await fetchFriendshipsPage(type, nextMaxId);
+    const pageUsers = data.users ?? [];
+    users.push(...pageUsers);
+    onProgress?.(users.length);
+
+    const hasMore = Boolean(data.next_max_id) && data.has_more !== false;
+    if (!hasMore || pageUsers.length === 0) break;
+
+    pages += 1;
+    if (pages >= pageLimit) {
+      console.warn(
+        `Stopping ${type} scan early: hit the safety cap of ${pageLimit} pages.`
+      );
+      break;
+    }
+
+    nextMaxId = data.next_max_id;
+    await sleep(Math.floor(1500 * Math.random()) + 500);
+    scrollCycle += 1;
+
+    if (scrollCycle > 6) {
+      scrollCycle = 0;
+      console.log(
+        `%c Durmiendo 10 segundos para evitar ser bloqueado temporalmente`,
+        "background: #222; color: #FF0000; font-size: 35px;"
+      );
+      await sleep(10000);
+    }
+  }
+
+  return users;
+};
+
+const logProgress = (followingCount, followersCount, nonFollowers) => {
   console.clear();
   console.log(
-    `%c Progreso ${getUnfollowCounter}/${followedPeople} (${Math.floor(
-      100 * (getUnfollowCounter / followedPeople)
-    )}%)`,
-    "background: #222; color: #bada55; font-size: 35px;"
+    `%c Progreso — siguiendo: ${followingCount} | seguidores: ${followersCount}`,
+    "background: #222; color: #bada55; font-size: 28px;"
   );
   console.log(
     `%cEstos usuarios no te siguen (Aún en progreso)`,
     "background: #222; color: #FC4119; font-size: 13px;"
   );
-  filteredList.forEach((user) =>
+  nonFollowers.forEach((user) =>
     console.log(`https://instagram.com/${user.username}`)
   );
 };
 
-const fetchData = async (url) => {
-  const response = await fetch(url);
-  return response.json();
-};
-
-const unfollowUsers = async () => {
+const unfollowUsers = async (filteredList) => {
   let b = 0;
   let unfollowSleepCounter = 0;
 
@@ -73,7 +136,7 @@ const unfollowUsers = async () => {
         "background: #222; color: #FF0000; font-size: 35px;"
       );
       unfollowSleepCounter = 0;
-      await sleep(300000); // 5 minutos
+      await sleep(300000);
     }
 
     console.log(`Dejaste de seguir a ${b}/${filteredList.length}`);
@@ -86,56 +149,75 @@ const unfollowUsers = async () => {
 };
 
 const startScript = async () => {
-  while (doNext) {
-    try {
-      const data = await fetchData(initialURL);
-
-      if (!followedPeople) followedPeople = data.data.user.edge_follow.count;
-
-      doNext = data.data.user.edge_follow.page_info.has_next_page;
-      initialURL = afterUrlGenerator(
-        data.data.user.edge_follow.page_info.end_cursor
-      );
-      getUnfollowCounter += data.data.user.edge_follow.edges.length;
-
-      data.data.user.edge_follow.edges
-        .filter((edge) => !edge.node.follows_viewer)
-        .forEach((edge) => filteredList.push(edge.node));
-
-      logProgress();
-      await sleep(Math.floor(400 * Math.random()) + 1000);
-      scrollCycle++;
-
-      if (scrollCycle > 6) {
-        scrollCycle = 0;
-        console.log(
-          `%c Durmiendo 10 segundos para evitar ser bloqueado temporalmente`,
-          "background: #222; color: #FF0000; font-size: 35px;"
-        );
-        await sleep(10000);
-      }
-    } catch (error) {
-      console.error("Error al obtener datos:", error);
-    }
+  if (!ds_user_id) {
+    console.error("No se encontró la cookie ds_user_id. Inicia sesión en Instagram.");
+    return;
   }
 
-  console.clear();
-  console.log(
-    `%c ${filteredList.length} usuarios no te siguen`,
-    "background: #222; color: #bada55; font-size: 25px;"
-  );
-  filteredList.forEach((user) =>
-    console.log(`https://instagram.com/${user.username}`)
-  );
-
-  if (confirm("¿Quieres dejar de seguir a las personas que hemos listado?")) {
-    await unfollowUsers();
-  } else {
+  try {
     console.log(
-      `%c Listo!!`,
-      "background: #222; color: #bada55; font-size: 25px;",
-      `${encodedMessage}`
+      `%c Escaneando cuentas que sigues...`,
+      "background: #222; color: #bada55; font-size: 25px;"
     );
+
+    const followingRaw = await fetchAllUsers(
+      "following",
+      FOLLOWING_PAGE_SAFETY_LIMIT,
+      (count) => {
+        console.log(`Siguiendo cargados: ${count}`);
+      }
+    );
+
+    if (followingRaw.length === 0) {
+      console.error("No se pudo cargar tu lista de following.");
+      return;
+    }
+
+    console.log(
+      `%c Escaneando seguidores...`,
+      "background: #222; color: #bada55; font-size: 25px;"
+    );
+
+    const followersRaw = await fetchAllUsers(
+      "followers",
+      FOLLOWERS_PAGE_SAFETY_LIMIT,
+      (count) => {
+        console.log(`Seguidores cargados: ${count}`);
+      }
+    );
+
+    const followerIds = new Set(
+      followersRaw.map((user) => String(user.pk_id ?? user.pk))
+    );
+
+    const results = followingRaw.map((user) =>
+      toUserNode(user, followerIds.has(String(user.pk_id ?? user.pk)))
+    );
+
+    const filteredList = results.filter((user) => !user.follows_viewer);
+
+    logProgress(results.length, followerIds.size, filteredList);
+
+    console.clear();
+    console.log(
+      `%c ${filteredList.length} usuarios no te siguen`,
+      "background: #222; color: #bada55; font-size: 25px;"
+    );
+    filteredList.forEach((user) =>
+      console.log(`https://instagram.com/${user.username}`)
+    );
+
+    if (confirm("¿Quieres dejar de seguir a las personas que hemos listado?")) {
+      await unfollowUsers(filteredList);
+    } else {
+      console.log(
+        `%c Listo!!`,
+        "background: #222; color: #bada55; font-size: 25px;",
+        `${encodedMessage}`
+      );
+    }
+  } catch (error) {
+    console.error("Error al obtener datos:", error);
   }
 };
 
