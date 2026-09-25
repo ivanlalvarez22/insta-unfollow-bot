@@ -12,11 +12,7 @@ const getCookie = (name) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const encodedMessage = "QXV0b3I6IEl2YW4gQWx2YXJleiA=";
 
-const csrftoken = getCookie("csrftoken");
 const ds_user_id = getCookie("ds_user_id");
-
-const unfollowUserUrlGenerator = (userId) =>
-  `https://www.instagram.com/web/friendships/${userId}/unfollow/`;
 
 const friendshipsUrlGenerator = (type, maxId, count = USERS_PER_PAGE) => {
   let url = `https://www.instagram.com/api/v1/friendships/${ds_user_id}/${type}/?count=${count}`;
@@ -203,53 +199,6 @@ const fetchAllUsers = async (type, pageLimit, onProgress) => {
   return users;
 };
 
-const unfollowUsers = async (filteredList, progress) => {
-  let b = 0;
-  let unfollowSleepCounter = 0;
-
-  for (const user of filteredList) {
-    try {
-      await fetch(unfollowUserUrlGenerator(user.id), {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-CSRFToken": csrftoken,
-        },
-        method: "POST",
-        credentials: "include",
-      });
-    } catch (error) {
-      console.error("Error al dejar de seguir al usuario:", error);
-    }
-
-    await sleep(Math.floor(2000 * Math.random()) + 4000);
-    b++;
-    unfollowSleepCounter++;
-
-    progress.update({
-      title: "Dejando de seguir",
-      label: `@${user.username}`,
-      count: b,
-      percent: (b / filteredList.length) * 100,
-    });
-
-    if (unfollowSleepCounter >= 5) {
-      progress.update({
-        title: "Pausa de seguridad",
-        label: "Esperando 5 minutos para evitar bloqueos…",
-        count: b,
-        percent: (b / filteredList.length) * 100,
-      });
-      unfollowSleepCounter = 0;
-      await sleep(300000);
-    }
-  }
-
-  console.log(
-    `%c ¡Todo HECHO!`,
-    "background: #222; color: #bada55; font-size: 25px;"
-  );
-};
-
 const startScript = async () => {
   if (!ds_user_id) {
     console.error("No se encontró la cookie ds_user_id. Inicia sesión en Instagram.");
@@ -332,19 +281,14 @@ const startScript = async () => {
       console.log(`https://instagram.com/${user.username}`)
     );
 
-    if (confirm("¿Quieres dejar de seguir a las personas que hemos listado?")) {
-      const unfollowProgress = createProgressUI();
-      await unfollowUsers(filteredList, unfollowProgress);
-      unfollowProgress.done("Unfollow completado");
-      await sleep(900);
-      unfollowProgress.remove();
-    } else {
-      console.log(
-        `%c Listo!!`,
-        "background: #222; color: #bada55; font-size: 25px;",
-        `${encodedMessage}`
-      );
-    }
+    alert(
+      `Resumen: de las ${results.length} cuentas que sigues, ${filteredList.length} no te siguen de vuelta.`
+    );
+    console.log(
+      `%c Listo!!`,
+      "background: #222; color: #bada55; font-size: 25px;",
+      `${encodedMessage}`
+    );
   } catch (error) {
     progress.remove();
     console.error("Error al obtener datos:", error);
