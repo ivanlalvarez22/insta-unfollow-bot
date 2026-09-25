@@ -53,6 +53,119 @@ const toUserNode = (user, followsViewer) => ({
   follows_viewer: followsViewer,
 });
 
+const createProgressUI = () => {
+  const existing = document.getElementById("iu-progress-overlay");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "iu-progress-overlay";
+  overlay.innerHTML = `
+    <style>
+      #iu-progress-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.72);
+        backdrop-filter: blur(8px);
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      #iu-progress-card {
+        width: min(420px, 90vw);
+        padding: 28px 24px;
+        border-radius: 16px;
+        background: #1a1a1a;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+        color: #fff;
+      }
+      #iu-progress-card h2 {
+        margin: 0 0 6px;
+        font-size: 1.15rem;
+        font-weight: 700;
+      }
+      #iu-progress-label {
+        margin: 0 0 18px;
+        color: #a8a8a8;
+        font-size: 0.9rem;
+      }
+      #iu-progress-track {
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      #iu-progress-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #22c55e, #4ade80);
+        box-shadow: 0 0 14px rgba(74, 222, 128, 0.45);
+        transition: width 0.35s ease;
+      }
+      #iu-progress-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 12px;
+        font-size: 0.85rem;
+        color: #d4d4d4;
+      }
+      #iu-progress-percent {
+        color: #4ade80;
+        font-weight: 700;
+      }
+    </style>
+    <div id="iu-progress-card">
+      <h2 id="iu-progress-title">Escaneando</h2>
+      <p id="iu-progress-label">Preparando…</p>
+      <div id="iu-progress-track">
+        <div id="iu-progress-fill"></div>
+      </div>
+      <div id="iu-progress-meta">
+        <span id="iu-progress-count">0 usuarios</span>
+        <span id="iu-progress-percent">0%</span>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const titleEl = overlay.querySelector("#iu-progress-title");
+  const labelEl = overlay.querySelector("#iu-progress-label");
+  const fillEl = overlay.querySelector("#iu-progress-fill");
+  const countEl = overlay.querySelector("#iu-progress-count");
+  const percentEl = overlay.querySelector("#iu-progress-percent");
+
+  return {
+    update({ title, label, count, percent }) {
+      if (title) titleEl.textContent = title;
+      if (label) labelEl.textContent = label;
+      if (typeof count === "number") {
+        countEl.textContent = `${count} usuario${count === 1 ? "" : "s"}`;
+      }
+      const clamped = Math.max(0, Math.min(100, Math.round(percent ?? 0)));
+      fillEl.style.width = `${clamped}%`;
+      percentEl.textContent = `${clamped}%`;
+    },
+    done(message) {
+      titleEl.textContent = "Listo";
+      labelEl.textContent = message;
+      fillEl.style.width = "100%";
+      percentEl.textContent = "100%";
+    },
+    remove() {
+      overlay.remove();
+    },
+  };
+};
+
+const estimatePercent = (loaded, phaseStart, phaseEnd) => {
+  const local = 100 * (1 - 1 / (1 + loaded / 150));
+  return phaseStart + (local / 100) * (phaseEnd - phaseStart);
+};
+
 const fetchAllUsers = async (type, pageLimit, onProgress) => {
   const users = [];
   let nextMaxId;
@@ -63,7 +176,7 @@ const fetchAllUsers = async (type, pageLimit, onProgress) => {
     const data = await fetchFriendshipsPage(type, nextMaxId);
     const pageUsers = data.users ?? [];
     users.push(...pageUsers);
-    onProgress?.(users.length);
+    onProgress?.(users.length, pages + 1);
 
     const hasMore = Boolean(data.next_max_id) && data.has_more !== false;
     if (!hasMore || pageUsers.length === 0) break;
@@ -82,10 +195,7 @@ const fetchAllUsers = async (type, pageLimit, onProgress) => {
 
     if (scrollCycle > 6) {
       scrollCycle = 0;
-      console.log(
-        `%c Durmiendo 10 segundos para evitar ser bloqueado temporalmente`,
-        "background: #222; color: #FF0000; font-size: 35px;"
-      );
+      onProgress?.(users.length, pages, true);
       await sleep(10000);
     }
   }
@@ -93,22 +203,7 @@ const fetchAllUsers = async (type, pageLimit, onProgress) => {
   return users;
 };
 
-const logProgress = (followingCount, followersCount, nonFollowers) => {
-  console.clear();
-  console.log(
-    `%c Progreso — siguiendo: ${followingCount} | seguidores: ${followersCount}`,
-    "background: #222; color: #bada55; font-size: 28px;"
-  );
-  console.log(
-    `%cEstos usuarios no te siguen (Aún en progreso)`,
-    "background: #222; color: #FC4119; font-size: 13px;"
-  );
-  nonFollowers.forEach((user) =>
-    console.log(`https://instagram.com/${user.username}`)
-  );
-};
-
-const unfollowUsers = async (filteredList) => {
+const unfollowUsers = async (filteredList, progress) => {
   let b = 0;
   let unfollowSleepCounter = 0;
 
@@ -130,16 +225,23 @@ const unfollowUsers = async (filteredList) => {
     b++;
     unfollowSleepCounter++;
 
+    progress.update({
+      title: "Dejando de seguir",
+      label: `@${user.username}`,
+      count: b,
+      percent: (b / filteredList.length) * 100,
+    });
+
     if (unfollowSleepCounter >= 5) {
-      console.log(
-        `%cDurmiendo 5 minutos para evitar ser bloqueado temporalmente`,
-        "background: #222; color: #FF0000; font-size: 35px;"
-      );
+      progress.update({
+        title: "Pausa de seguridad",
+        label: "Esperando 5 minutos para evitar bloqueos…",
+        count: b,
+        percent: (b / filteredList.length) * 100,
+      });
       unfollowSleepCounter = 0;
       await sleep(300000);
     }
-
-    console.log(`Dejaste de seguir a ${b}/${filteredList.length}`);
   }
 
   console.log(
@@ -154,35 +256,56 @@ const startScript = async () => {
     return;
   }
 
+  const progress = createProgressUI();
+
   try {
-    console.log(
-      `%c Escaneando cuentas que sigues...`,
-      "background: #222; color: #bada55; font-size: 25px;"
-    );
+    progress.update({
+      title: "Paso 1 de 2",
+      label: "Cargando cuentas que sigues…",
+      count: 0,
+      percent: 0,
+    });
 
     const followingRaw = await fetchAllUsers(
       "following",
       FOLLOWING_PAGE_SAFETY_LIMIT,
-      (count) => {
-        console.log(`Siguiendo cargados: ${count}`);
+      (count, _pages, sleeping) => {
+        progress.update({
+          title: "Paso 1 de 2",
+          label: sleeping
+            ? "Pausa breve para evitar bloqueos…"
+            : "Cargando cuentas que sigues…",
+          count,
+          percent: estimatePercent(count, 0, 45),
+        });
       }
     );
 
     if (followingRaw.length === 0) {
+      progress.remove();
       console.error("No se pudo cargar tu lista de following.");
       return;
     }
 
-    console.log(
-      `%c Escaneando seguidores...`,
-      "background: #222; color: #bada55; font-size: 25px;"
-    );
+    progress.update({
+      title: "Paso 2 de 2",
+      label: "Cargando tus seguidores…",
+      count: 0,
+      percent: 45,
+    });
 
     const followersRaw = await fetchAllUsers(
       "followers",
       FOLLOWERS_PAGE_SAFETY_LIMIT,
-      (count) => {
-        console.log(`Seguidores cargados: ${count}`);
+      (count, _pages, sleeping) => {
+        progress.update({
+          title: "Paso 2 de 2",
+          label: sleeping
+            ? "Pausa breve para evitar bloqueos…"
+            : "Cargando tus seguidores…",
+          count,
+          percent: estimatePercent(count, 45, 95),
+        });
       }
     );
 
@@ -196,7 +319,9 @@ const startScript = async () => {
 
     const filteredList = results.filter((user) => !user.follows_viewer);
 
-    logProgress(results.length, followerIds.size, filteredList);
+    progress.done(`${filteredList.length} usuarios no te siguen`);
+    await sleep(900);
+    progress.remove();
 
     console.clear();
     console.log(
@@ -208,7 +333,11 @@ const startScript = async () => {
     );
 
     if (confirm("¿Quieres dejar de seguir a las personas que hemos listado?")) {
-      await unfollowUsers(filteredList);
+      const unfollowProgress = createProgressUI();
+      await unfollowUsers(filteredList, unfollowProgress);
+      unfollowProgress.done("Unfollow completado");
+      await sleep(900);
+      unfollowProgress.remove();
     } else {
       console.log(
         `%c Listo!!`,
@@ -217,6 +346,7 @@ const startScript = async () => {
       );
     }
   } catch (error) {
+    progress.remove();
     console.error("Error al obtener datos:", error);
   }
 };
